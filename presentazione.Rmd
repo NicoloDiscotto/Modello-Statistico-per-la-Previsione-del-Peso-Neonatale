@@ -1,0 +1,945 @@
+---
+title: "Modello Statistico per Prevedere il Peso dei Neonati"
+author: "Nicolò Discotto"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, comment = "")
+```
+
+```{r, echo = FALSE, message=FALSE, warning=FALSE}
+# Installazione (solo se necessario)
+# install.packages(c("car", "lmtest", "moments", "knitr", "ggplot2", "MASS", "broom", "dplyr", "kableExtra"))
+
+library(car)
+library(lmtest)
+library(moments)
+library(knitr)
+library(ggplot2)
+library(MASS)
+library(broom)
+library(dplyr)
+library(kableExtra)
+
+# Importazione del dataset
+neonati <- read.csv("neonati.csv")
+
+attach(neonati)
+```
+
+## Step 1 - Raccolta dei Dati e Struttura del Dataset
+
+```{r, , message=FALSE, warning=FALSE}
+kable(summary(neonati))
+```
+
+È stato effettuato un controllo preliminare sulla presenza di dati mancanti all'interno del dataset e non sono stati rilevati valori mancanti.
+
+Come possiamo notare il dataset è composto da 2500 osservazioni e 10 variabili riguardanti dei neonati e le loro madri, in particolare:
+
+- `Anni.madre`: variabile quantitativa continua che indica l'età della madre in anni;
+
+- `N.gravidanze`: variabile quantitativa discreta che indica quante gravidanze ha avuto la madre;
+
+- `Fumatrici` (0 = NO, SI = 1): variabile qualitativa dicotomica, codificata in una dummy che assume il valore 0 oppure 1 in base alla condizione fumatrice NO o SI;
+
+- `Gestazione`: variabile quantitativa continua che indica il numero di settimane di gestazione;
+
+- `Peso`: variabile quantitativa continua che indica il peso alla nascita in grammi;
+
+- `Lunghezza`: variabile quantitativa continua che indica la lunghezza in millimetri del neonato;
+
+- `Cranio`: variabile quantitativa continua che indica il diametro craniale in millimetri del neonato;
+
+- `Tipo.parto` (Naturale o Cesareo): variabile qualitativa nominale;
+
+- `Ospedale` (osp1, osp2, osp3): variabile qualitativa nominale;
+
+- `Sesso` (M o F): variabile qualitativa dicotomica.
+
+```{r}
+neonati$Fumatrici <- factor(neonati$Fumatrici, levels = c(0,1), labels = c("NO", "SI"))
+neonati$Tipo.parto <- as.factor(neonati$Tipo.parto)
+neonati$Ospedale <- as.factor(neonati$Ospedale)
+neonati$Sesso <- as.factor(neonati$Sesso)
+
+neonati$Anni.madre[neonati$Anni.madre %in% c(0,1)] <- 28
+```
+Procedo a convertire in fattori le variabili qualitative del dataset.
+Inoltre analizzando il dataset ho riscontrato che sono presenti due osservazioni `Anni.madre` con un’età riportata in modo errato, ossia pari ad 1 e a 0. Poiché gli altri dati sembrano corretti, possiamo assumere che si tratti di errori e sostituirli con il valore mediano dell’età.
+
+## Step 2 - Analisi e Modellizzazione
+### 2.1 - Analisi Preliminare
+
+```{r}
+# Funzione per calcolare l'indice di Gini normalizzato
+gini.index <- function(x){
+  ni = table(x)
+  fi = ni / length(x)
+  fi2 = fi^2
+  J = length(table(x))
+  gini = 1 - sum(fi2)
+  gini.norm = gini / ((J - 1) / J)
+  return(round(gini.norm, 2))
+}
+# Funzione per calcolare le statistiche delle variabili numeriche
+calculate_numeric_stats <- function(x) {
+  stats <- c(
+    min = min(x),
+    Q1 = quantile(x)[2],
+    Q2 = quantile(x)[3],
+    Q3 = quantile(x)[4],
+    max = max(x),
+    mean = mean(x),
+    median = median(x),
+    std_dev = sd(x),
+    CV = sd(x) / mean(x) * 100,
+    skewness = moments::skewness(x),
+    kurtosis = moments::kurtosis(x)-3,
+    gini = gini.index(x)
+  )
+  return(round(stats, 2))
+}
+
+# Funzione per calcolare le statistiche delle variabili qualitative
+calculate_categorical_stats <- function(x, nome_var = "Variabile") {
+  freq <- table(x)
+  freq_rel <- prop.table(freq)
+
+  freq_df <- data.frame(
+    Categoria = names(freq),
+    Fr_Abs = as.integer(freq),
+    Fr_Rel = round(as.numeric(freq_rel), 2)
+  )
+  colnames(freq_df) <- c(nome_var, "Fr. Assoluta", "Fr. Relativa")
+  kable(freq_df) %>%
+    kable_styling(full_width = FALSE, position = "left")
+}
+```
+
+```{r, echo = FALSE, results = 'asis'}
+numeric_vars <- c("Anni.madre", "Gestazione", "N.gravidanze", "Cranio", "Lunghezza", "Peso")
+numeric_stats <- lapply(neonati[numeric_vars], calculate_numeric_stats)
+numeric_stats_df <- do.call(rbind, numeric_stats)
+rownames(numeric_stats_df) <- numeric_vars
+```
+```{r}
+kable(numeric_stats_df)
+```
+
+La tabella riassume le principali statistiche descrittive per sei variabili del dataset neonatale. L’età delle madri varia da 13 a 46 anni, con una media di 28 anni e una distribuzione simmetrica (skewness ≈ 0). La gestazione mostra una media di 39 settimane, con una bassa variabilità (CV = 4,79%) e una distribuzione leggermente negativa ma molto leptocurtica (kurtosis = 8,26), indicando una forte concentrazione attorno alla media.
+
+Il numero di gravidanze è in media vicino a 1, ma con una forte asimmetria positiva (skewness = 2,51) e una variabilità elevata (CV = 130,51%), suggerendo la presenza di pochi casi con molte gravidanze. Le misure antropometriche del neonato (cranio, lunghezza e peso) mostrano distribuzioni tendenzialmente simmetriche o leggermente negative, con valori medi rispettivamente di 340 mm per la circonferenza cranica, 495 mm per la lunghezza e 3284 grammi per il peso.
+
+Le variabili `Peso` e `Lunghezza` presentano una dispersione moderata (CV intorno al 5%), mentre `Cranio` è la più concentrata. Il coefficiente di Gini, che misura l’ineguaglianza, è massimo per il Peso (1,00) e minimo per Gestazione (0,85), coerente con la maggiore regolarità del periodo gestazionale rispetto alla variabilità nei parametri neonatali.
+
+```{r}
+calculate_categorical_stats(Sesso, "Sesso")
+calculate_categorical_stats(Fumatrici, "Fumatrici")
+calculate_categorical_stats(Tipo.parto, "Tipo.Parto")
+calculate_categorical_stats(Ospedale, "Ospedale")
+```
+
+La distribuzione della variabile `Sesso` mostra una popolazione neonatale equamente suddivisa tra femmine e maschi, indicando un perfetto bilanciamento tra i sessi nel campione analizzato.
+
+Per quanto riguarda il comportamento materno, solo il 4% delle madri dichiara di essere fumatrici durante la gravidanza, mentre la stragrande maggioranza (96%) non fuma, evidenziando una tendenza positiva in termini di salute prenatale.
+
+La variabile `Tipo.parto` evidenzia che il 71% dei parti è avvenuto in modo naturale, mentre il 29% tramite cesareo. Questa distribuzione suggerisce che, pur essendo il parto cesareo frequente, rimane meno comune rispetto al parto naturale.
+
+Infine, la variabile `Ospedale` indica una distribuzione equilibrata dei parti tra le tre strutture ospedaliere: osp1 (33%), osp2 (34%) e osp3 (33%). Questa omogeneità suggerisce un'equa distribuzione dei casi tra i tre centri.
+
+### Test Statistici
+
+```{r}
+# Test Chi-quadrato
+tab_parto_ospedale <- table(Tipo.parto, Ospedale)
+chi_test <- chisq.test(tab_parto_ospedale)
+```
+```{r, echo = FALSE, results = 'asis'}
+cat(paste0("**Test del Chi-quadrato**\n\n",
+           "- Statistica: ", round(chi_test$statistic, 2), "\n",
+           "- Gradi di libertà: ", chi_test$parameter, "\n",
+           "- p_value: ", format.pval(chi_test$p.value, digits = 3, eps = 0.001), "\n\n"))
+```
+
+Il test del **Chi-quadrato** non ha rilevato un’associazione significativa tra il tipo di parto e l’ospedale (p-value = 0,578). Di conseguenza, la distribuzione del tipo di parto risulta simile tra i diversi ospedali, senza differenze statisticamente significative.
+
+Attraverso una ricerca online, sono stati reperiti i seguenti dati medi di riferimento per il peso e la lunghezza dei neonati, utili per confrontare i nostri risultati:
+
+- Peso medio alla nascita della popolazione: 3300 g 
+
+- Lunghezza media alla nascita della popolazione: 500 mm
+
+[Fonte](https://www.ospedalebambinogesu.it/da-0-a-30-giorni-come-si-presenta-e-come-cresce-80012/)
+
+```{r}
+# test t con la popolazione media
+test_peso <- t.test(Peso, mu = 3300, alternative = "two.sided")
+test_lunghezza <- t.test(Lunghezza, mu = 500, alternative = "two.sided")
+```
+```{r, echo = FALSE, results = 'asis'}
+cat("##### **Test t con la popolazione media**\n\n")
+
+cat("##### Peso\n")
+cat(paste0(
+  "- Media campionaria: ", round(test_peso$estimate, 2), "\n",
+  "- Statistica t: ", round(test_peso$statistic, 2), "\n",
+  "- Intervallo di confidenza al 95%: [", 
+     paste(round(test_peso$conf.int, 2), collapse = "; "), "]\n",
+  "- p_value:", format.pval(test_peso$p.value, digits = 3, eps = 0.001), "\n\n"
+))
+
+cat("##### Lunghezza\n")
+cat(paste0(
+  "- Media campionaria: ", round(test_lunghezza$estimate, 1), "\n",
+  "- Statistica t: ", round(test_lunghezza$statistic, 3), "\n",
+  "- Intervallo di confidenza al 95%: [", 
+     paste(round(test_lunghezza$conf.int, 1), collapse = "; "), "]\n",
+  "- p_value: ", format.pval(test_lunghezza$p.value, digits = 3, eps = 0.001), "\n\n"
+))
+```
+
+Il peso medio dei neonati (3284,08 g) non presenta una differenza significativa rispetto alla media teorica della popolazione, con un valore di p-value pari a 0,13. Pertanto, non si può rifiutare l’ipotesi nulla.
+
+La lunghezza media dei neonati (494,70 mm), invece, risulta significativamente inferiore alla media ipotizzata di 500 mm (p < 0,001), portando al rifiuto dell’ipotesi nulla.
+
+```{r, echo = FALSE, results = 'asis'}
+# Test t tra sessi
+extract_info <- function(test) {
+  list(
+    mean_F = round(test$estimate["mean in group F"], 1),
+    mean_M = round(test$estimate["mean in group M"], 1),
+    t = round(test$statistic, 3),
+    p = format.pval(test$p.value, digits = 4, eps = 0.0001),
+    ci = round(test$conf.int, 2)
+  )
+}
+```
+```{r}
+weight <- extract_info(t.test(Peso ~ Sesso, data = neonati))
+length <- extract_info(t.test(Lunghezza ~ Sesso, data = neonati))
+head <- extract_info(t.test(Cranio ~ Sesso, data = neonati))
+```
+```{r, echo = FALSE, results = 'asis'}
+cat("### **Test t tra sessi**\n\n")
+
+cat("#### **Peso**\n")
+cat(paste0(
+  "- Media Femmine: ", round(weight$mean_F, 1), "\n",
+  "- Media Maschi: ", round(weight$mean_M, 1), "\n",
+  "- Statistica t: ", round(weight$t, 3), "\n",
+  "- Intervallo di confidenza al 95%: [", paste(round(weight$ci, 1), collapse = "; "), "]\n",
+  "- p_value: ", format.pval(weight$p, digits = 3, eps = 0.001), "\n\n"
+))
+
+cat("#### **Lunghezza**\n")
+cat(paste0(
+  "- Media Femmine: ", round(length$mean_F, 1), "\n",
+  "- Media Maschi: ", round(length$mean_M, 1), "\n",
+  "- Statistica t: ", round(length$t, 3), "\n",
+  "- Intervallo di confidenza al 95%: [", paste(round(length$ci, 1), collapse = "; "), "]\n",
+  "- p_value: ", format.pval(length$p, digits = 3, eps = 0.001), "\n\n"
+))
+
+cat("#### **Circonferenza cranica**\n")
+cat(paste0(
+  "- Media Femmine: ", round(head$mean_F, 1), "\n",
+  "- Media Maschi: ", round(head$mean_M, 1), "\n",
+  "- Statistica t: ", round(head$t, 3), "\n",
+  "- Intervallo di confidenza al 95%: [", paste(round(head$ci, 1), collapse = "; "), "]\n",
+  "- p_value: ", format.pval(head$p, digits = 3, eps = 0.001), "\n\n"
+))
+```
+
+I neonati di sesso maschile presentano un peso medio significativamente superiore rispetto a quelli di sesso femminile (p < 0,001), con una differenza media di 247 grammi.
+
+Anche la lunghezza media alla nascita risulta maggiore nei maschi rispetto alle femmine, con una differenza statisticamente significativa (p < 0,001).
+
+Lo stesso vale per la circonferenza cranica media, che nei maschi è significativamente più elevata rispetto alle femmine (p < 0,001).
+
+```{r, fig.width=10, fig.height=6}
+# Funzione per mostrare la correlazione tra variabili
+panel.cor <- function(x, y, digits = 2, prefix = "", cex.cor, ...) {
+  par(usr = c(0, 1, 0, 1))
+  r <- cor(x, y)
+  txt <- format(c(r, 0.123456789), digits = digits)[1]
+  txt <- paste0(prefix, txt)
+  if (missing(cex.cor)) cex.cor <- 0.8 / strwidth(txt)
+  text(0.5, 0.5, txt, cex = cex.cor, col = "red")
+}
+
+pairs(neonati, lower.panel = panel.cor, upper.panel = panel.smooth)
+```
+
+Dal grafico si osserva che le variabili maggiormente correlate al peso del neonato sono la `Lunghezza` (r = 0,80) e il `Cranio` (r = 0,70), entrambe con correlazioni positive e di intensità elevata. Questi risultati confermano la coerenza attesa tra le principali misure antropometriche alla nascita.
+
+```{r}
+# Shapiro-Wilk test per verificare la normalità della variabile Peso
+test_norm_peso <- shapiro.test(Peso)
+```
+```{r, echo = FALSE, results = 'asis'}
+cat(paste0("**Test di normalità di Shapiro-Wilk sulla distribuzione del peso**\n\n",
+           "- Statistica W: ", round(test_norm_peso$statistic, 2), "\n",
+           "- p_value: ", format.pval(test_norm_peso$p.value, digits = 3, eps = 0.001), "\n\n"))
+
+```
+
+Il test ha rilevato che la variabile non segue una distribuzione normale.
+
+### 2.2 - Creazione del Modello di Regressione
+
+```{r}
+# Creazione del primo modello di regressione
+mod1 <- lm(Peso ~ . -Tipo.parto -Ospedale, data = neonati)
+```
+```{r, echo=FALSE}
+# Estrazione coefficienti con broom
+tab <- tidy(mod1) %>%
+  mutate(
+    p_value = format.pval(p.value, digits = 3, eps = 0.001),
+    Significance = case_when(
+      p.value <= 0.001 ~ "***",
+      p.value <= 0.01  ~ "**",
+      p.value <= 0.05  ~ "*",
+      p.value <= 0.1   ~ "*",
+      TRUE             ~ ""
+    )
+  ) %>%
+  select(term, estimate, std.error, statistic, p_value, Significance) %>%
+  rename(
+    Coefficiente = term,
+    Estimate = estimate,
+    `Std. Error` = std.error,
+    `t value` = statistic,
+    p_value = p_value,
+    Significance = Significance
+  )
+
+# Stampa tabella formattata
+kable(tab, digits = 2, caption = "Coefficiente del modello di regressione lineare") %>%
+  kable_styling(full_width = FALSE, position = "left")
+```
+
+Per prevedere il peso di un neonato, costruiamo un modello di regressione lineare multipla, inizialmente con tutte le variabili ad esclusione però di `Tipo.parto` e `Ospedale`, in quanto non sono logicamente rilevanti per la previsione del peso alla nascita.
+
+Le variabili `N.gravidanze`, `Gestazione`, `Lunghezza`, `Cranio` e `SessoM` sono risultate statisticamente significative, con dei p-value molto bassi. Segnaliamo in particolare le variabili `Lunghezza`e `Cranio` che hanno t-value elevati.
+
+Al contrario, le variabili `Anni.madre` e `Fumatrici` non sono risultate significative nel modello, indicando che non hanno un impatto rilevante sul peso del neonato.
+
+Il valore dell’**R² aggiustato** ottenuto è pari 0,7264, il che significa che il modello spiega circa il 73% della variabilità del peso di un neonato, un risultato sufficiente ma non del tutto soddisfacente. L’**F-statistic** è pari 949 con un p-value < 2.2e-16, indicando che il modello è statisticamente significativo.
+
+### 2.3 - Selezione del Modello Ottimale
+
+Per provare a migliorare il modello, procediamo rimuovendo alcune variabili con il metodo di selezione **Stepwise**, eliminando quindi le variabili con p-value elevato `Anni.madre` e `Fumatrici`.
+
+```{r}
+mod2 <- update(mod1, ~ . -Anni.madre -Fumatrici)
+```
+```{r, echo=FALSE}
+# Estrazione coefficienti con broom
+tab <- tidy(mod2) %>%
+  mutate(
+    p_value = format.pval(p.value, digits = 3, eps = 0.001),
+    Significance = case_when(
+      p.value <= 0.001 ~ "***",
+      p.value <= 0.01  ~ "**",
+      p.value <= 0.05  ~ "*",
+      p.value <= 0.1   ~ "*",
+      TRUE             ~ ""
+    )
+  ) %>%
+  select(term, estimate, std.error, statistic, p_value, Significance) %>%
+  rename(
+    Coefficiente = term,
+    Estimate = estimate,
+    `Std. Error` = std.error,
+    `t value` = statistic,
+    p_value = p_value,
+    Significance = Significance
+  )
+
+# Stampa tabella formattata
+kable(tab, digits = 2, caption = "Coefficiente del modello di regressione lineare") %>%
+  kable_styling(full_width = FALSE, position = "left")
+```
+
+L'**R² aggiustato** è rimasto pressochè identico, ossia pari a 0,7265.
+
+Per verificare la validità del modello, utilizziamo la funzione anova(), che confronta i modelli e fornisce il p-value dell’F-statistic.
+
+```{r}
+# Confronto ANOVA tra mod1 e mod2
+anova_df <- anova(mod1, mod2)
+```
+```{r, echo=FALSE}
+anova_df <- anova_df %>%
+  mutate(across(where(is.numeric), ~ round(., 3))) %>%
+  tibble::rownames_to_column(var = "Modello") %>%
+  rename(
+    `RSS` = `Res.Df`,
+    `RSS residui` = `RSS`,
+    `Gradi di libertà` = `Df`,
+    `F value` = `F`,
+    `p-value` = `Pr(>F)`
+  )
+
+kable(anova_df, caption = "Confronto tra modelli tramite ANOVA") %>%
+  kable_styling(full_width = FALSE, position = "left")
+```
+
+Il p-value, pari a 0,406, non risulta significativo, procediamo quindi al calcolo e al confronto dei valori **BIC** dei due modelli.
+
+```{r}
+# Calcolo e confronto dei valori BIC per mod1 e mod2
+bic_values <- BIC(mod1, mod2)
+```
+```{r, echo=FALSE}
+bic_df <- as.data.frame(bic_values)
+
+kable(bic_df, caption = "BIC tra mod1 e mod2") %>%
+  kable_styling(full_width = FALSE, position = "left")
+```
+
+In questo caso, il BIC di `mod2` risulta pari a 35220,10, inferiore (e quindi preferibile) rispetto al BIC di `mod1`, pari invece a 35233,94.
+
+Possiamo ora verificare il VIF del modello ottimizzato nella tabella seguente:
+
+```{r}
+vif_mod <- car::vif(mod2)
+```
+```{r, echo=FALSE}
+if (is.matrix(vif_mod)) {
+  vif_df <- as.data.frame(vif_mod) %>%
+    tibble::rownames_to_column(var = "Variabile")
+
+  colnames(vif_df) <- c("Variabile", "GVIF", "Df", "GVIF^(1/(2*Df))")
+
+  vif_df <- vif_df %>%
+    mutate(across(where(is.numeric), ~ round(., 3)))
+
+} else {
+  vif_df <- data.frame(
+    Variabile = names(vif_mod),
+    VIF = round(as.numeric(vif_mod), 3)
+  )
+}
+
+kable(vif_df, caption = "Valori di VIF per il modello di regressione") %>%
+  kable_styling(full_width = FALSE, position = "left")
+
+```
+
+Essendo inferiore a 5 per ogni variabile, non sono presenti problemi di multicollinearità.
+
+Selezioniamo `mod2` per la sua maggiore semplicità e solidità. 
+
+Approfondiamo inoltre la possibilità che alcune variabili esplicative influenzino il peso del neonato in modo non lineare, in particolare consideriamo i termini di interazione tra le variabili Gestazione e Lunghezza, e tra Gestazione e Cranio.
+
+```{r}
+mod3 <- update(mod2, ~ . + Gestazione:Lunghezza + Gestazione:Cranio)
+```
+```{r, echo=FALSE}
+# Estrazione coefficienti con broom
+tab <- tidy(mod3) %>%
+  mutate(
+    p_value = format.pval(p.value, digits = 3, eps = 0.001),
+    Significance = case_when(
+      p.value <= 0.001 ~ "***",
+      p.value <= 0.01  ~ "**",
+      p.value <= 0.05  ~ "*",
+      p.value <= 0.1   ~ "*",
+      TRUE             ~ ""
+    )
+  ) %>%
+  select(term, estimate, std.error, statistic, p_value, Significance) %>%
+  rename(
+    Coefficiente = term,
+    Estimate = estimate,
+    `Std. Error` = std.error,
+    `t value` = statistic,
+    p_value = p_value,
+    Significance = Significance
+  )
+
+# Stampa tabella formattata
+kable(tab, digits = 2, caption = "Coefficiente del modello di regressione lineare") %>%
+  kable_styling(full_width = FALSE, position = "left")
+```
+
+La significatività della variabile `Cranio` si è ridotta, così come l’interazione tra Gestazione e Lunghezza sembra non essere significativa.
+
+Rimuoviamo l’interazione tra Gestazione e Lunghezza e otteniamo il seguente risultato:
+
+```{r}
+mod4 <- update(mod3, ~ . - Gestazione:Lunghezza)
+```
+```{r, echo=FALSE}
+# Estrazione coefficienti con broom
+tab <- tidy(mod4) %>%
+  mutate(
+    p_value = format.pval(p.value, digits = 3, eps = 0.001),
+    Significance = case_when(
+      p.value <= 0.001 ~ "***",
+      p.value <= 0.01  ~ "**",
+      p.value <= 0.05  ~ "*",
+      p.value <= 0.1   ~ "*",
+      TRUE             ~ ""
+    )
+  ) %>%
+  select(term, estimate, std.error, statistic, p_value, Significance) %>%
+  rename(
+    Coefficiente = term,
+    Estimate = estimate,
+    `Std. Error` = std.error,
+    `t value` = statistic,
+    p_value = p_value,
+    Significance = Significance
+  )
+
+# Stampa tabella formattata
+kable(tab, digits = 2, caption = "Coefficiente del modello di regressione lineare") %>%
+  kable_styling(full_width = FALSE, position = "left")
+```
+
+Infine, possiamo considerare l’aggiunta di effetti non lineari al modello, ad esempio un effetto logaritmico per le variabili `Gestazione` e `Lunghezza`.
+```{r, echo=FALSE}
+options(scipen = 999)
+```
+
+```{r}
+mod5 <- update(mod4, ~ . + log(Gestazione) + log(Lunghezza))
+```
+```{r, echo=FALSE}
+# Estrazione coefficienti con broom
+tab <- tidy(mod5) %>%
+  mutate(
+    p_value = format.pval(p.value, digits = 3, eps = 0.001),
+    Significance = case_when(
+      p.value <= 0.001 ~ "***",
+      p.value <= 0.01  ~ "**",
+      p.value <= 0.05  ~ "*",
+      p.value <= 0.1   ~ "*",
+      TRUE             ~ ""
+    )
+  ) %>%
+  select(term, estimate, std.error, statistic, p_value, Significance) %>%
+  rename(
+    Coefficiente = term,
+    Estimate = estimate,
+    `Std. Error` = std.error,
+    `t value` = statistic,
+    p_value = p_value,
+    Significance = Significance
+  )
+
+# Stampa tabella formattata
+kable(tab, digits = 2, caption = "Coefficiente del modello di regressione lineare") %>%
+  kable_styling(full_width = FALSE, position = "left")
+```
+
+L’**R² aggiustato** è pari a 0,7398, leggermente migliore rispetto al modello precedente. 
+
+Notiamo inoltre, che è possibile rimuovere il termine di interazione tra le variabili Gestazione e Cranio.
+
+```{r}
+mod6 <- update(mod5, ~ . - Gestazione:Cranio)
+```
+```{r, echo=FALSE}
+# Estrazione coefficienti con broom
+tab <- tidy(mod6) %>%
+  mutate(
+    p_value = format.pval(p.value, digits = 3, eps = 0.001),
+    Significance = case_when(
+      p.value <= 0.001 ~ "***",
+      p.value <= 0.01  ~ "**",
+      p.value <= 0.05  ~ "*",
+      p.value <= 0.1   ~ "*",
+      TRUE             ~ ""
+    )
+  ) %>%
+  select(term, estimate, std.error, statistic, p_value, Significance) %>%
+  rename(
+    Coefficiente = term,
+    Estimate = estimate,
+    `Std. Error` = std.error,
+    `t value` = statistic,
+    p_value = p_value,
+    Significance = Significance
+  )
+
+# Stampa tabella formattata
+kable(tab, digits = 2, caption = "Coefficiente del modello di regressione lineare") %>%
+  kable_styling(full_width = FALSE, position = "left")
+```
+
+L**R² aggiustato** ottenuto ora è pari di 0,7395, che è pressochè identico all’R² aggiustato del modello precedente.
+
+```{r}
+# Confronto ANOVA tra i vari modelli
+anova_df <- anova(mod1, mod2, mod3, mod4, mod5, mod6)
+```
+```{r, echo=FALSE}
+anova_df <- anova_df %>%
+  mutate(across(where(is.numeric), ~ round(., 3))) %>%
+  tibble::rownames_to_column(var = "Modello") %>%
+  rename(
+    `RSS` = `Res.Df`,
+    `RSS residui` = `RSS`,
+    `Gradi di libertà` = `Df`,
+    `F value` = `F`,
+    `p-value` = `Pr(>F)`
+  )
+
+kable(anova_df, caption = "Confronto tra modelli tramite ANOVA") %>%
+  kable_styling(full_width = FALSE, position = "left")
+```
+
+```{r}
+# Calcolo e confronto dei valori BIC tra i vari modelli
+bic_values <- BIC(mod1, mod2, mod3, mod4, mod5, mod6)
+```
+```{r, echo=FALSE}
+bic_df <- as.data.frame(bic_values)
+
+kable(bic_df, caption = "BIC tra i vari modelli") %>%
+  kable_styling(full_width = FALSE, position = "left")
+```
+
+Il confronto tramite **ANOVA** mostra che `mod5` introduce miglioramenti altamente significativi (p < 0.001), mentre il passaggio a `mod6`, che rimuove un termine, comporta una piccola ma significativa perdita (p-value = 0,041). Tuttavia, il **BIC** più basso è proprio quello di `mod6` (BIC = 35112,05), indicando che questo è il modello ottimale per prevedere il peso del neonato, in quanto mantiene alte prestazioni predittive con un numero minore di parametri rispetto a `mod5`.
+
+Si conclude quindi che **mod6** è il modello preferito, in quanto statisticamente solido e più parsimonioso.
+
+Analizzando il modello scelto si evidenzia in particolare che:
+
+- ogni gravidanza precedente sembra aumentare il peso del neonato in media di 14,5 grammi;
+
+- l’effetto della gestazione sul peso non è lineare: il termine logaritmico indica un forte aumento iniziale, mentre quello lineare suggerisce una stabilizzazione o lieve calo nelle ultime settimane;
+
+- discorso analogo per la lunghezza: inizialmente l’aumento è marcato, ma tende a ridursi con valori maggiori;
+
+- Ogni centimetro in più nella dimensione cranica è associato, in media, a un aumento di 10,4 grammi nel peso del neonato;
+
+- i neonati maschi pesano in media 72 grammi in più rispetto alle femmine.
+
+### 2.4 - Analisi della Qualità del Modello
+
+Possiamo analizzare i residui del modello facendo riferimento al grafico seguente.
+
+```{r, fig.width=10, fig.height=6}
+# Diagnostica grafica del modello
+par(mfrow=c(2,2))
+plot(mod6)
+```
+
+L’analisi dei residui nella figura suggerisce alcuni aspetti problematici del modello. In primo luogo, la mancata normalità dei residui indica che potrebbero esserci delle deviazioni sistematiche, che potrebbero rendere i risultati del modello meno affidabili per l’inferenza. L’eteroschedasticità, cioè la variabilità non costante dei residui, può portare a una sovrastima o sottostima degli intervalli di confidenza e dei test statistici. La mancanza di correlazione lineare tra i residui e i predittori suggerisce che il modello cattura in parte la relazione con i predittori, ma potrebbe non aver incluso altre variabili rilevanti. La presenza di outlier e punti di leverage indica che ci sono dati che esercitano un’influenza sproporzionata sul modello. Questo può distorcere i risultati, causando un bias nei parametri e potenzialmente compromettendo la validità del modello.
+
+```{r}
+# Shapiro-Wilk test per la normalità dei residui
+test_norm <- shapiro.test(residuals(mod6))
+```
+```{r, echo = FALSE, results = 'asis'}
+cat(paste0("**Test di normalità di Shapiro-Wilk sui residui di mod6**\n\n",
+           "- Statistica W: ", round(test_norm$statistic, 2), "\n",
+           "- p_value: ", format.pval(test_norm$p.value, digits = 3, eps = 0.001), "\n\n"))
+```
+
+```{r}
+# Test di Breusch-Pagan per eteroschedasticità
+bp <- bptest(mod6)
+# Test di Durbin-Watson per autocorrelazione dei residui
+dw <- dwtest(mod6)
+```
+```{r, echo = FALSE, results = 'asis'}
+cat(paste0("**Test di eteroschedasticità (Breusch-Pagan)**\n\n",
+           "- Statistica: ", round(bp$statistic, 2), "\n",
+           "- Gradi di libertà: ", bp$parameter, "\n",
+           "- p_value: ", format.pval(bp$p.value, digits = 3, eps = 0.001), "\n\n"))
+
+cat(paste0("**Test di autocorrelazione (Durbin-Watson)**\n\n",
+           "- Statistica: ", round(dw$statistic, 2), "\n",
+            "- p_value: ", format.pval(dw$p.value, digits = 3, eps = 0.001), "\n\n"))
+```
+
+La situazione precedente è confermata dal test di **Shapiro-Wilk**, che verifica la normalità dei residui e fornisce un p-value decisamente inferiore a 0,05, il che ci porta a rifiutare l’ipotesi nulla di normalità. L’omoschedasticità dei residui può essere valutata attraverso il test di **Breusch-Pagan**, che restituisce anch’esso un p-value decisamente inferiore a 0.05, portandoci quindi a rifiutare l’ipotesi nulla di omoschedasticità. Infine, verifichiamo l’indipendenza dei residui utilizzando il test di **Durbin-Watson**, il quale restituisce un p-value di 0,108, superiore a 0,05, consentendoci di accettare l’ipotesi nulla di indipendenza.
+
+Nella grafico seguente, possiamo vedere un’altra rappresentazione dei residui del modello che ci permette di osservare: la distribuzione dei residui, i punti di leverage, gli outlier e la distanza di Cook. 
+
+```{r, fig.width=10, fig.height=6}
+par(mfrow=c(2,2))
+
+residui <- residuals(mod2)
+plot(density(residui), main = "", xlab = "Densità", ylab = "Residui")
+
+# Calcolo dei leverage
+lev <- hatvalues(mod2)
+plot(lev, ylab = "Leverage", pch = 20)
+p <- sum(lev)
+n <- length(lev)
+soglia <- 2*p/n
+abline(h=soglia,col=2)
+
+# Identificazione di possibili outlier tramite i residui studentizzati
+rstud <- rstudent(mod2)
+plot(rstud, ylab = "Residui Studentizzati", pch = 1)
+abline(h = c(-2, 2), col = "red")
+outlier_result <- car::outlierTest(mod2)
+
+# Analisi della distanza di Cook per individuare osservazioni influenti
+cook <- cooks.distance(mod2)
+plot(cook, ylab = "Distanza di Cook", pch = 1, ylim = c(0, 1.5))
+```
+```{r, echo = FALSE, results = 'asis'}
+
+# Estrai nomi, residui e p-value
+residui <- round(outlier_result$rstudent, 2)
+p_bonf <- format.pval(outlier_result$p, digits = 4, scientific = TRUE)
+
+# Crea il data.frame
+outlier_df <- data.frame(
+  Residuo_Studentizzato = residui,
+  p_Bonferroni = p_bonf,
+  stringsAsFactors = FALSE
+)
+
+# Mostra la tabella con kable()
+kable(outlier_df,
+      caption = "Test degli Outlier (Bonferroni)",
+      align = "lrr") %>%
+  kable_styling(full_width = FALSE, position = "left")
+```
+
+Per quanto riguarda i punti di leva, il grafico dei **leverage** mostra alcune osservazioni con valori superiori alla soglia critica (2*p/n ≈ 0,004). Tra queste, sono state segnalate, tra le altre, le osservazioni 15, 155 e 161.
+
+Il grafico degli **outlier** indica che l’osservazione 1551 supera nettamente la soglia di ±2, risultando un outlier significativo, come confermato anche dal test di Bonferroni. Ulteriori osservazioni potenzialmente influenti sono 155 e 1306, anch’esse con p-value corretti significativi.
+
+Il grafico della **distanza di Cook** evidenzia che alcune osservazioni, in particolare la 1551, esercitano una forte influenza sul modello. 
+
+L’analisi dei residui mette in luce alcune violazioni delle assunzioni classiche del modello lineare, soprattutto per quanto riguarda la normalità e l’omoschedasticità. Sono stati inoltre identificati diversi punti con leverage elevato e outlier influenti, in particolare l’osservazione 1551, che potrebbero compromettere la robustezza delle stime e l’affidabilità delle inferenze statistiche.
+
+```{r}
+kable(neonati[1551, ])
+```
+
+Questa osservazione riporta un valore di lunghezza pari a 315 mm, molto inferiore rispetto alla media della lunghezza neonatale, che risulta intorno ai 500 mm.
+Un valore così basso non è plausibile dal punto di vista biologico e suggerisce la presenza di un possibile errore di inserimento dati.
+Per questo motivo, si è deciso di escludere questa osservazione dall’analisi, per preservare la qualità e l’affidabilità dei risultati ottenuti.
+
+```{r}
+# Creazione di un nuovo dataframe escludendo l’osservazione 1551
+neonati_no_outliers <- neonati[-1551, ]
+
+mod_no_outliers <- update(mod6, data = neonati_no_outliers)
+
+```
+```{r, echo=FALSE}
+tab <- tidy(mod_no_outliers) %>%
+  mutate(
+    p_value = format.pval(p.value, digits = 3, eps = 0.001),
+    Significance = case_when(
+      p.value <= 0.001 ~ "***",
+      p.value <= 0.01  ~ "**",
+      p.value <= 0.05  ~ "*",
+      p.value <= 0.1   ~ "*",
+      TRUE             ~ ""
+    )
+  ) %>%
+  select(term, estimate, std.error, statistic, p_value, Significance) %>%
+  rename(
+    Coefficiente = term,
+    Estimate = estimate,
+    `Std. Error` = std.error,
+    `t value` = statistic,
+    p_value = p_value,
+    Significance = Significance
+  )
+
+kable(tab, digits = 2, caption = "Coefficiente del modello di regressione lineare") %>%
+  kable_styling(full_width = FALSE, position = "left")
+```
+
+Il modello con l’outlier rimosso non presenta sostanziali variazioni e i coefficienti sono quasi identici. L’unica differenza è che il coefficiente della variabile log(Gestazione) perde significatività, quindi possiamo rimuoverlo dal modello.
+
+```{r}
+mod2_no_outliers <- update(mod_no_outliers, ~ . - log(Gestazione))
+```
+```{r, echo=FALSE}
+tab <- tidy(mod2_no_outliers) %>%
+  mutate(
+    p_value = format.pval(p.value, digits = 3, eps = 0.001),
+    Significance = case_when(
+      p.value <= 0.001 ~ "***",
+      p.value <= 0.01  ~ "**",
+      p.value <= 0.05  ~ "*",
+      p.value <= 0.1   ~ "*",
+      TRUE             ~ ""
+    )
+  ) %>%
+  select(term, estimate, std.error, statistic, p_value, Significance) %>%
+  rename(
+    Coefficiente = term,
+    Estimate = estimate,
+    `Std. Error` = std.error,
+    `t value` = statistic,
+    p_value = p_value,
+    Significance = Significance
+  )
+
+kable(tab, digits = 2, caption = "Coefficiente del modello di regressione lineare") %>%
+  kable_styling(full_width = FALSE, position = "left")
+```
+
+```{r, warning=FALSE}
+# Calcolo e confronto dei valori BIC
+bic_values <- BIC(mod6, mod_no_outliers, mod2_no_outliers)
+```
+```{r, echo=FALSE}
+bic_df <- as.data.frame(bic_values)
+
+kable(bic_df, caption = "Calcolo e confronto dei valori BIC") %>%
+  kable_styling(full_width = FALSE, position = "left")
+```
+
+```{r}
+# Test di Breusch-Pagan per eteroschedasticità
+bp <- bptest(mod2_no_outliers)
+# Test di Durbin-Watson per autocorrelazione dei residui
+dw <- dwtest(mod2_no_outliers)
+```
+```{r, echo = FALSE, results = 'asis'}
+cat(paste0("**Test di eteroschedasticità (Breusch-Pagan)**\n\n",
+           "- Statistica: ", round(bp$statistic, 2), "\n",
+           "- Gradi di libertà: ", bp$parameter, "\n",
+           "- p_value: ", format.pval(bp$p.value, digits = 3, eps = 0.001), "\n\n"))
+
+cat(paste0("**Test di autocorrelazione (Durbin-Watson)**\n\n",
+           "- Statistica: ", round(dw$statistic, 2), "\n",
+           "- p_value: ", format.pval(dw$p.value, digits = 3, eps = 0.001), "\n\n"))
+```
+
+Scegliamo come modello finale `mod2_no_outliers`.
+Dal confronto dei valori **BIC**, emerge che questo è il modello preferibile, seppur di poco, rispetto a `mod_no_outliers`
+
+Il valore di **R²** è pari a 0,7423, indicando che circa il 74% della variabilità del peso dei neonati è spiegata dal modello. Inoltre, il valore di **R² aggiustato**, pari a 0,7417, suggerisce che il modello è generalizzabile e non sovra-adattato ai dati.
+
+Analizzando le statistiche riportate nell’ultima tabella, tutti i predittori risultano significativi (p < 0,05), e la maggior parte presenta valori p < 0,001, il che rende il modello robusto e consistente.
+
+Per quanto riguarda la validazione dei residui, il test di **Breusch-Pagan** restituisce un p-value pari a 0,0411, inferiore alla soglia convenzionale di 0,05. Ciò porta a rifiutare l’ipotesi nulla di omoschedasticità, suggerendo la presenza di eteroschedasticità nel modello.
+
+Al contrario, il test di **Durbin-Watson** restituisce un p-value di 0,108, ben al di sopra della soglia di significatività. Possiamo quindi accettare l’ipotesi nulla di indipendenza dei residui, e concludere che non vi è autocorrelazione tra essi.
+
+In sintesi, il modello di regressione lineare sviluppato si è dimostrato un buon strumento per predire il peso dei neonati e fornire indicazioni utili per la comprensione delle relazioni tra le variabili.
+
+## Step 3 - Previsioni e Risultati
+
+Per effettuare una previsione applicativa, è stato considerato il caso di una neonata (sesso femminile), nata alla terza gravidanza della madre, con una gestazione di 39 settimane. In assenza di valori specifici per le variabili `Lunghezza` e `Cranio`, si è fatto ricorso ai rispettivi valori medi, calcolati in precedenza mediante la funzione `calculate_numeric_stats`, al fine di stimare il peso alla nascita.
+
+```{r}
+# Estrazione dei valori medi di Lunghezza e Cranio
+mean_length <- numeric_stats_df["Lunghezza", "mean"]
+mean_head <- numeric_stats_df["Cranio", "mean"]
+
+# Creazione di un nuovo dataframe contenente le caratteristiche di una neonata ipotetica
+neonati_prev  <- data.frame(
+  N.gravidanze = 3,
+  Gestazione = 39,
+  Lunghezza = mean_length,
+  Cranio = mean_head,
+  Tipo.parto = "Nat",
+  Sesso = factor("F", levels = c("F", "M"))
+)
+
+# Creazione della variabile dummy SessoM
+neonati_prev$SessoM <- ifelse(neonati_prev$Sesso == "M", 1, 0)
+
+# Calcolo della previsione con il modello mod2_no_outliers
+weight_prev <- predict(mod2_no_outliers, newdata = neonati_prev)
+```
+```{r, echo = FALSE, results = 'asis'}
+cat(paste("Il peso previsto è in media di:", round(weight_prev, 2), "grammi.\n"))
+```
+
+## Step 4 - Visualizzazioni
+
+Per rappresentare visivamente i risultati del modello e le principali relazioni tra le variabili, sono stati realizzati diversi grafici esplicativi. Questi strumenti grafici permettono di comprendere meglio l’influenza dei predittori sul peso alla nascita. Si precisa che la variabile `Fumatrici` non è stata inclusa nel modello finale; pertanto, come variabile di stratificazione si è scelto di utilizzare `Sesso`.
+
+#### Grafico 1: Relazione tra Durata della Gestazione e Peso alla Nascita, stratificata per Sesso
+
+```{r, message=FALSE, fig.width=10, fig.height=6}
+ggplot(data = neonati_no_outliers) +
+  geom_point(aes(x = Gestazione,
+                 y = Peso,
+                 col = Sesso), position = "jitter") +
+  geom_smooth(aes(x = Gestazione,
+                  y = Peso,
+                  col = Sesso), se = FALSE, method = "lm") +
+  labs(title = "Relazione tra Durata della Gestazione e Peso alla Nascita",
+       x = "Durata della Gestazione (settimane)",
+       y = "Peso alla Nascita (grammi)",
+       color = "Sesso") +
+  theme_minimal()
+```
+
+È evidente una relazione positiva tra la durata della gestazione e il peso alla nascita per entrambi i sessi. Le linee di tendenza indicano che, a parità di settimane gestazionali, i neonati di sesso maschile tendono ad avere un peso leggermente superiore rispetto alle femmine. Questo risultato è coerente con l’effetto significativo della variabile `Sesso` nel modello.
+
+#### Grafico 2: Relazione tra Numero di Gravidanze e Peso alla Nascita, stratificata per Sesso
+
+```{r, message=FALSE, fig.width=10, fig.height=6}
+ggplot(data = neonati_no_outliers) +
+  geom_point(aes(x = N.gravidanze,
+                 y = Peso,
+                 col = Sesso), position = "jitter") +
+  geom_smooth(aes(x = N.gravidanze,
+                  y = Peso,
+                  col = Sesso), se = FALSE, method = "lm") +
+  labs(title = "Relazione tra N.gravidanze e Peso alla Nascita",
+       x = "Numero di gravidanze",
+       y = "Peso alla Nascita (grammi)",
+       color = "Sesso") +
+  theme_minimal()
+```
+
+La rappresentazione grafica della relazione tra il numero di gravidanze e il peso alla nascita, suddivisa per sesso, evidenzia una tendenza molto lieve. Si nota un piccolo divario nel peso medio tra maschi e femmine, in linea con quanto rilevato dal modello, mentre l’effetto del numero di gravidanze sul peso risulta sostanzialmente marginale.
+
+#### Grafico 3: Relazione tra Lunghezza e Peso alla Nascita, stratificata per Sesso
+
+```{r, message=FALSE, fig.width=10, fig.height=6}
+ggplot(data = neonati_no_outliers) +
+  geom_point(aes(x = Lunghezza,
+                 y = Peso,
+                 col = Sesso), position = "jitter") +
+  geom_smooth(aes(x = Lunghezza,
+                  y = Peso,
+                  col = Sesso), se = FALSE, method = "lm") +
+  labs(title = "Relazione tra Lunghezza del Neonato e Peso alla Nascita",
+       x = "Lunghezza del Neonato (cm)",
+       y = "Peso alla Nascita (grammi)",
+       color = "Sesso") +
+  theme_minimal()
+```
+
+Il grafico evidenzia una marcata relazione positiva tra la lunghezza del neonato e il peso alla nascita, distinta per sesso. A parità di lunghezza, si osserva che i neonati maschi tendono a presentare un peso leggermente superiore rispetto alle femmine, confermando l’importanza della variabile Sesso nel modello finale.
+
+#### Grafico 4: Relazione tra Diametro Cranico e Peso alla Nascita, stratificata per Sesso
+
+```{r, message=FALSE, fig.width=10, fig.height=6}
+ggplot(data = neonati_no_outliers) +
+  geom_point(aes(x = Cranio,
+                 y = Peso,
+                 col = Sesso), position = "jitter") +
+  geom_smooth(aes(x = Cranio,
+                  y = Peso,
+                  col = Sesso), se = FALSE, method = "lm") +
+  labs(title = "Relazione tra Diametro Cranico e Peso alla Nascita",
+       x = "Diametro Cranico (cm)",
+       y = "Peso alla Nascita (grammi)",
+       color = "Sesso") +
+  theme_minimal()
+```
+
+La visualizzazione mette in evidenza una chiara correlazione positiva tra il diametro cranico e il peso alla nascita. Analogamente a quanto osservato per la lunghezza, anche in questo caso i neonati maschi tendono a mostrare un peso leggermente superiore rispetto alle femmine per lo stesso diametro cranico, confermando così il ruolo significativo della variabile Sesso come predittore nel modello.
+
+## Step 5 - Conclusioni
+
+Il progetto si è focalizzato sulla costruzione e selezione di un modello predittivo robusto per il peso neonatale, basato su un’ampia varietà di variabili demografiche e cliniche. Il processo di modellazione ha previsto diverse fasi di raffinamento, partendo da un modello completo fino a giungere a una versione più parsimoniosa. Il modello finale scelto, `mod2_no_outliers` rappresenta il miglior equilibrio tra accuratezza di adattamento e semplicità interpretativa. In sintesi, questo lavoro ha prodotto un modello predittivo efficace e interpretabile, identificando i principali fattori che influenzano la variabilità del peso alla nascita. Le conoscenze acquisite possono costituire una solida base per studi clinici futuri e per interventi mirati a migliorare gli esiti neonatali.
